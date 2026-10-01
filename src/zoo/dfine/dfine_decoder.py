@@ -509,7 +509,7 @@ class DFINETransformer(nn.Module):
         self.reg_max = reg_max
 
         assert query_select_method in ("default", "one2many", "agnostic"), ""
-        assert cross_attn_method in ("default", "discrete"), ""
+        assert cross_attn_method in ("default", "discrete", "gather"), ""
         self.cross_attn_method = cross_attn_method
         self.query_select_method = query_select_method
 
@@ -762,8 +762,8 @@ class DFINETransformer(nn.Module):
         else:
             anchors = self.anchors
             valid_mask = self.valid_mask
-        if memory.shape[0] > 1:
-            anchors = anchors.repeat(memory.shape[0], 1, 1)
+        # repeat unconditionally - a python `if` on the batch size gets baked in by ONNX tracing
+        anchors = anchors.repeat(memory.shape[0], 1, 1)
 
         # memory = torch.where(valid_mask, memory, 0)
         # TODO fix type error for onnx export

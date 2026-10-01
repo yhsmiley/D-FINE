@@ -1,22 +1,18 @@
-FROM registry.cn-hangzhou.aliyuncs.com/peterande/dfine:v1
+# docker build -t dfine .
 
-# FULL BUILDING INFO:
+FROM nvidia/cuda:12.0.1-cudnn8-devel-ubuntu22.04
 
-# docker login --username=xxx registry.cn-hangzhou.aliyuncs.com
-# cd [PATH_2_Dockerfile]
-# docker build -t xxx:v1 .
-# docker tag xxx:v1 registry.cn-hangzhou.aliyuncs.com/xxx/xxx:v1
-# docker push registry.cn-hangzhou.aliyuncs.com/xxx/xxx:v1
+ARG DEBIAN_FRONTEND=noninteractive
 
-# FROM dockerpull.com/nvidia/cuda:12.0.1-cudnn8-devel-ubuntu18.04
-# ARG DEBIAN_FRONTEND=noninteractive
-# ENV PATH="/root/miniconda3/bin:${PATH}"
-# ARG PATH="/root/miniconda3/bin:${PATH}"
+ENV cwd="/home/"
+WORKDIR $cwd
 
-# RUN sed -i "s/archive.ubuntu./mirrors.aliyun./g" /etc/apt/sources.list
-# RUN sed -i "s/deb.debian.org/mirrors.aliyun.com/g" /etc/apt/sources.list
-# RUN sed -i "s/security.debian.org/mirrors.aliyun.com\/debian-security/g" /etc/apt/sources.list
-# RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+ENV TZ=Asia/Singapore
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# ENV TORCH_CUDA_ARCH_LIST="7.5 8.6"
 
 # RUN apt-get update && apt-get install -y --no-install-recommends apt-utils && \
 #         apt-get upgrade -y && \
@@ -24,25 +20,65 @@ FROM registry.cn-hangzhou.aliyuncs.com/peterande/dfine:v1
 #         apt-get install -y libxrender1 libxext6 tmux wget htop && \
 #         apt-get install -y build-essential gcc g++ gdb binutils pciutils net-tools iputils-ping iproute2 git vim wget curl make openssh-server openssh-client tmux tree man unzip unrar
 
-# ENV PYTHONIOENCODING=UTF-8
+RUN apt-get -y update
+RUN apt-get -y upgrade
+RUN apt -y update
 
-# RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-#         mkdir /root/.conda  && \
-#         bash Miniconda3-latest-Linux-x86_64.sh -b  && \
-#         rm -f Miniconda3-latest-Linux-x86_64.sh  && \
-#         conda init bash
+# Ubuntu 22.04's python3.11 is 3.11.0rc1, which breaks torch - use deadsnakes for a final release
+RUN apt-get install --no-install-recommends -y software-properties-common gpg-agent && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get -y update
 
-# RUN conda config --set show_channel_urls yes \
-#         && echo "channels:" > ~/.condarc \
-#         && echo " - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/" >> ~/.condarc \
-#         && echo " - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/" >> ~/.condarc \
-#         && echo "show_channel_urls: true" \
-#         && cat ~/.condarc \
-#         && pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-#         && cat ~/.config/pip/pip.conf
+RUN apt-get install --no-install-recommends -y \
+    build-essential \
+    libgl1-mesa-glx \
+    python3.11 \
+    python3.11-dev \
+    python3.11-distutils \
+    curl
 
-# RUN python3 -m pip install --upgrade pip  && \
-#         python3 -m pip install --upgrade setuptools
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --set python3 /usr/bin/python3.11
 
-# RUN python3 -m pip install jupyterlab pycocotools PyYAML tensorboard scipy
-# RUN python3 -m pip --default-timeout=10000 install torch torchvision
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    python3 /tmp/get-pip.py && rm /tmp/get-pip.py
+
+RUN apt-get clean && rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* && apt-get -y autoremove
+
+RUN rm -rf /var/cache/apt/archives/
+
+### APT END ###
+
+ENV PYTHONIOENCODING=UTF-8
+
+RUN python3 -m pip install --upgrade pip setuptools
+
+# Pin torch to a CUDA 12.1 build to match the host driver (530.x) and keep the legacy ONNX exporter default
+RUN pip3 install --no-cache-dir --retries 10 --timeout 60 --resume-retries 10 \
+    torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+
+COPY requirements.txt requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# tensorrt pinned to a release that supports CUDA 12.0-12.5, to match the host driver (530.x)
+# tensorrt-cu12 runs a nested pip for the 2 GB libs wheel - env vars (unlike CLI flags) reach it
+RUN PIP_RESUME_RETRIES=200 PIP_RETRIES=10 PIP_TIMEOUT=60 \
+    pip3 install --no-cache-dir tensorrt-cu12==10.3.0
+
+# onnxruntime-gpu replaces onnxruntime (same module, and it still has the CPU provider)
+# onnxruntime-gpu 1.24.4 is built for CUDA 12 + cuDNN 9 (1.30 needs CUDA 13, which driver 530.x can't run)
+RUN pip3 install --no-cache-dir \
+    onnx \
+    onnxslim \
+    onnxruntime-gpu==1.24.4
+
+# RUN python3 -m pip install jupyterlab pycocotools PyYAML tensorboard scipy torch torchvision
+
+# RUN pip3 install --no-cache-dir \
+#     jupyterlab \
+#     pycocotools \
+#     PyYAML \
+#     scipy \
+#     tensorboard \
+#     torch \
+#     torchvision

@@ -25,6 +25,49 @@ def bias_init_with_prob(prior_prob=0.01):
     return bias_init
 
 
+def grid_sample_bilinear(im: torch.Tensor, grid: torch.Tensor) -> torch.Tensor:
+    """Same as F.grid_sample(im, grid, mode="bilinear", padding_mode="zeros", align_corners=False),
+    built from Floor/Pad/GatherElements so it exports to ONNX opsets below 16.
+
+    Args:
+        im (Tensor): [n, c, h, w]
+        grid (Tensor): [n, gh, gw, 2], xy in [-1, 1]
+
+    Returns:
+        output (Tensor): [n, c, gh, gw]
+    """
+    n, c, h, w = im.shape
+    _, gh, gw, _ = grid.shape
+
+    x = ((grid[..., 0] + 1) * w - 1) / 2
+    y = ((grid[..., 1] + 1) * h - 1) / 2
+    x0 = x.floor()
+    y0 = y.floor()
+
+    wa = ((x0 + 1 - x) * (y0 + 1 - y)).unsqueeze(1)
+    wb = ((x0 + 1 - x) * (y - y0)).unsqueeze(1)
+    wc = ((x - x0) * (y0 + 1 - y)).unsqueeze(1)
+    wd = ((x - x0) * (y - y0)).unsqueeze(1)
+
+    # zero border of 1 pixel - any corner outside the image is clamped onto it and reads 0
+    im_padded = F.pad(im, [1, 1, 1, 1]).reshape(n, c, -1)
+    padded_w = w + 2
+    # cast to int before building the flat index - in fp16 (e.g. TensorRT fp16) y * w + x
+    # exceeds 2048 and loses integer precision
+    x1 = (x0 + 2).clamp(0, padded_w - 1).to(torch.int64)
+    x0 = (x0 + 1).clamp(0, padded_w - 1).to(torch.int64)
+    y1 = (y0 + 2).clamp(0, h + 1).to(torch.int64)
+    y0 = (y0 + 1).clamp(0, h + 1).to(torch.int64)
+
+    def gather(yy, xx):
+        idx = (yy * padded_w + xx).reshape(n, 1, -1).expand(-1, c, -1)
+        return torch.gather(im_padded, 2, idx).reshape(n, c, gh, gw)
+
+    return (
+        gather(y0, x0) * wa + gather(y1, x0) * wb + gather(y0, x1) * wc + gather(y1, x1) * wd
+    )
+
+
 def deformable_attention_core_func(
     value, value_spatial_shapes, sampling_locations, attention_weights
 ):
@@ -92,7 +135,7 @@ def deformable_attention_core_func_v2(
     _, Len_q, _, _, _ = sampling_locations.shape
 
     # sampling_offsets [8, 480, 8, 12, 2]
-    if method == "default":
+    if method in ("default", "gather"):
         sampling_grids = 2 * sampling_locations - 1
 
     elif method == "discrete":
@@ -111,14 +154,18 @@ def deformable_attention_core_func_v2(
                 value_l, sampling_grid_l, mode="bilinear", padding_mode="zeros", align_corners=False
             )
 
+        elif method == "gather":
+            sampling_value_l = grid_sample_bilinear(value_l, sampling_grid_l)
+
         elif method == "discrete":
             # n * m, seq, n, 2
-            sampling_coord = (
-                sampling_grid_l * torch.tensor([[w, h]], device=value_l.device) + 0.5
-            ).to(torch.int64)
-
+            # clamp before the int64 cast - ONNX Clip only accepts integer inputs from opset 12
             # FIX ME? for rectangle input
-            sampling_coord = sampling_coord.clamp(0, h - 1)
+            sampling_coord = (
+                (sampling_grid_l * torch.tensor([[w, h]], device=value_l.device) + 0.5)
+                .clamp(0, h - 1)
+                .to(torch.int64)
+            )
             sampling_coord = sampling_coord.reshape(bs * n_head, Len_q * num_points_list[level], 2)
 
             s_idx = (

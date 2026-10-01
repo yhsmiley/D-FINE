@@ -60,7 +60,7 @@ DFINETransformer:
 
 
   num_points: [3, 6, 3] # [4, 4, 4] [3, 6, 3]
-  cross_attn_method: default # default, discrete
+  cross_attn_method: default # default, discrete, gather
   query_select_method: default # default, agnostic
 
 
