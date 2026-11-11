@@ -12,14 +12,6 @@ ENV LANG=C.UTF-8
 ENV TZ=Asia/Singapore
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# ENV TORCH_CUDA_ARCH_LIST="7.5 8.6"
-
-# RUN apt-get update && apt-get install -y --no-install-recommends apt-utils && \
-#         apt-get upgrade -y && \
-#         apt-get install -y vim git libgl1-mesa-glx libglib2.0-0 libsm6 && \
-#         apt-get install -y libxrender1 libxext6 tmux wget htop && \
-#         apt-get install -y build-essential gcc g++ gdb binutils pciutils net-tools iputils-ping iproute2 git vim wget curl make openssh-server openssh-client tmux tree man unzip unrar
-
 RUN apt-get -y update
 RUN apt-get -y upgrade
 RUN apt -y update
@@ -72,13 +64,5 @@ RUN pip3 install --no-cache-dir \
     onnxslim \
     onnxruntime-gpu==1.24.4
 
-# RUN python3 -m pip install jupyterlab pycocotools PyYAML tensorboard scipy torch torchvision
-
-# RUN pip3 install --no-cache-dir \
-#     jupyterlab \
-#     pycocotools \
-#     PyYAML \
-#     scipy \
-#     tensorboard \
-#     torch \
-#     torchvision
+# ultralytics for export_yolo11_trt7.py (torch is already pinned above, pip keeps it as it satisfies ultralytics)
+RUN pip3 install --no-cache-dir ultralytics

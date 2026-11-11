@@ -1,0 +1,10 @@
+__include__: ['../dfine_hgnetv2_n_maritime.yml']
+
+DFINETransformer:
+  cross_attn_method: gather
+
+eval_spatial_size: [1280, 1280] # h w
+
+# python3 export_dfine_trt7.py -w weights/maritime/dfine-nano_maritime.pth -c configs/dfine/custom/dfine_hgnetv2_n_maritime.yml -s 1280 --batch 1 --opset 11 --simplify --slice-classes
+
+# python3 export_yolo11_trt7.py -w weights/maritime/YOLO11n_all_maritime.pt -s 1280 --batch 1 --opset 11 --simplify

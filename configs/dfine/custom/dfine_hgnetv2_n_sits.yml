@@ -4,3 +4,4 @@ DFINETransformer:
   cross_attn_method: gather
 
 # python3 export_dfine.py -w weights/dfine_n_coco.pth -c configs/dfine/custom/dfine_hgnetv2_n_sits.yml -s 640 --batch 1 --opset 11 --simplify
+# python3 export_dfine_trt7.py -w weights/dfine_n_coco.pth -c configs/dfine/custom/dfine_hgnetv2_n_sits.yml -s 640 --batch 1 --opset 11 --simplify

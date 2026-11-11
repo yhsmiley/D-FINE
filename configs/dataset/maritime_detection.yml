@@ -1,0 +1,8 @@
+task: detection
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', ]
+
+num_classes: 2
+remap_mscoco_category: False
