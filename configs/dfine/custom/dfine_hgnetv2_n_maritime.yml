@@ -6,5 +6,7 @@ DFINETransformer:
 eval_spatial_size: [1280, 1280] # h w
 
 # python3 export_dfine_trt7.py -w weights/maritime/dfine-nano_maritime.pth -c configs/dfine/custom/dfine_hgnetv2_n_maritime.yml -s 1280 --batch 1 --opset 11 --simplify --slice-classes
+# python3 verify_onnx.py --onnx weights/maritime/dfine-nano_maritime.onnx -w weights/maritime/dfine-nano_maritime.pth -c configs/dfine/custom/dfine_hgnetv2_n_maritime.yml -s 1280 --images coco128/images/train2017 --slice-classes
 
 # python3 export_yolo11_trt7.py -w weights/maritime/YOLO11n_all_maritime.pt -s 1280 --batch 1 --opset 11 --simplify
+# python3 verify_onnx.py --onnx weights/maritime/YOLO11n_all_maritime.onnx -w weights/maritime/YOLO11n_all_maritime.pt -s 1280 --images coco128/images/train2017 --model yolo11
