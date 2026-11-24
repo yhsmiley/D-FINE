@@ -19,6 +19,7 @@ to get below that, and then to get past the TensorRT 7 parser.
 | A failed fix could leave a broken `.onnx` | Export to `<name>.onnx.raw`, write the final file only after the fix passes | both `*_trt7.py` scripts |
 | Host driver and Python constraints | Pinned Docker environment | `Dockerfile` |
 | No way to know the file is accurate | Parity check against PyTorch on real images | `verify_onnx.py` |
+| No check against ground truth | COCO mAP of PyTorch and ONNX side by side | `eval_map.py` |
 
 ## 1. Model code changes
 
@@ -112,6 +113,25 @@ Results (CPU, onnxruntime 1.24.4, optimizations off, fresh opset 11 exports):
 Isolating the changes showed that the plain opset 11 export without the post-pass (`export_dfine.py`) and the
 opset 17 `grid_sample` export both match PyTorch exactly, so the `gather` sampler is correct.
 
+### Accuracy against ground truth (mAP)
+`eval_map.py` scores the PyTorch model (original `grid_sample` path) and the ONNX on the same images with
+`faster-coco-eval`, against a COCO format ground truth file. For a COCO model the model labels are matched to the
+ground truth categories by class name, so the ground truth can use any category ids. See `CONVERSION_INSTRUCTIONS.md`
+for the command.
+
+D-FINE-N COCO, 640, all 128 coco128 images (931 ground truth boxes, 71 classes, `labels.json`):
+
+| Metric | PyTorch | ONNX, optimizer off | ONNX, optimizer on (basic) |
+|---|---|---|---|
+| mAP 0.50:0.95 | 0.5667 | 0.5667 | 0.5672 |
+| AP50 | 0.7300 | 0.7300 | 0.7305 |
+| AP75 | 0.6004 | 0.6004 | 0.6010 |
+| AR 100 | 0.7026 | 0.7026 | 0.7026 |
+
+With the optimizer off the ONNX matches PyTorch to four decimals and the detection counts are identical (38144 each).
+coco128 is a subset of COCO train2017, which this checkpoint was trained on, so the absolute mAP is optimistic. Use the
+PyTorch versus ONNX comparison, and run on COCO val2017 for a real accuracy number.
+
 ### Known issue: onnxruntime Pad/MaxPool fusion
 With onnxruntime's graph optimization on (the default), the post-pass export gives different results. On all 128 coco128
 images at `--ort-opt basic`, `verify_onnx.py` FAILS: 11 of 1847 PyTorch detections have no match in the ONNX, 15 of
@@ -123,14 +143,18 @@ least 0.947 and score differences up to 0.04, so do not judge this on a small sa
 - The optimizer is already at fault at `ENABLE_BASIC`. Only `ORT_DISABLE_ALL` avoids it.
 - Dropping the empty Pad input (the TensorRT 7 rewrite) and giving the Pad an explicit constant 0 behave the same.
   Only the original empty `''` input stops onnxruntime from fusing.
+- On ground truth the effect is negligible: mAP changes by +0.0006 with the optimizer on (0.5672 against 0.5667). The
+  detections that differ are mostly low-score ones.
 - The ONNX file is correct. Any onnxruntime inference of it should set
-  `graph_optimization_level = ORT_DISABLE_ALL`. `verify_onnx.py` does this by default.
+  `graph_optimization_level = ORT_DISABLE_ALL`. `verify_onnx.py` and `eval_map.py` do this by default.
 
 ## 6. Not verified
 
 - The TensorRT 7 engine. All checks above are against onnxruntime, so whether the Pad, Clip, Gather, MatMul and Split
   rewrites are enough for the TensorRT 7 parser, and give the same values there, still has to be checked on the
   Jetson.
-- Accuracy against ground truth (mAP). The checks compare the ONNX with the PyTorch model, not with labels.
-- The maritime and YOLO11 models on maritime images (the checks used coco128 images).
+- mAP on held-out data. The mAP above is on coco128, which the COCO checkpoint was trained on.
+- mAP of the maritime D-FINE and YOLO11 models. The repo has no maritime images or annotations. `eval_map.py` supports
+  them (`--label-map identity`, `--model yolo11`) but it has not been run on them.
+- The maritime and YOLO11 models on maritime images (the parity checks used coco128 images).
 - Dynamic batch size.
