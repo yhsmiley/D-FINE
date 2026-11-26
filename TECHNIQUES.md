@@ -19,7 +19,7 @@ to get below that, and then to get past the TensorRT 7 parser.
 | A failed fix could leave a broken `.onnx` | Export to `<name>.onnx.raw`, write the final file only after the fix passes | both `*_trt7.py` scripts |
 | Host driver and Python constraints | Pinned Docker environment | `Dockerfile` |
 | No way to know the file is accurate | Parity check against PyTorch on real images | `verify_onnx.py` |
-| No check against ground truth | COCO mAP of PyTorch and ONNX side by side | `eval_map.py` |
+| No check against ground truth | F1/F2 (fdet-api, default) or COCO mAP of PyTorch and ONNX side by side | `eval_map.py` |
 
 ## 1. Model code changes
 
@@ -89,13 +89,18 @@ training were exactly `0..N-1`, which is a heuristic and not something the scrip
 
 - Base: `nvidia/cuda:12.0.1-cudnn8-devel-ubuntu22.04`.
 - Python 3.11 from deadsnakes, because Ubuntu 22.04's 3.11.0rc1 breaks torch.
+- All Python packages are installed from `requirements.txt` in one step.
 - `torch==2.4.1` and `torchvision==0.19.1` from the cu121 index, to match the host driver (530.x) and keep the legacy
   ONNX exporter as the default.
-- `tensorrt-cu12==10.3.0` (supports CUDA 12.0 to 12.5). The retry settings are passed as `PIP_*` env vars, because the
-  nested pip for the 2 GB wheel ignores CLI flags.
+- `tensorrt-cu12==10.3.0` (supports CUDA 12.0 to 12.5). Only the TensorRT tools use it, not the conversion.
 - `onnxruntime-gpu==1.24.4`. Version 1.30 needs CUDA 13, which the driver cannot run.
 - `onnx`, `onnxslim` (unpinned) and `ultralytics` (for the YOLO export).
-- pip retry and resume flags, for flaky networks.
+- `loguru` is needed by `train.py` (through `src/solver/validator.py`), not by the conversion.
+- `ENV PIP_RETRIES=10 PIP_TIMEOUT=60 PIP_RESUME_RETRIES=200`, for flaky networks. They are env vars and not CLI flags
+  because the nested pip that `tensorrt-cu12` runs for its 2 GB wheel ignores CLI flags.
+- `git` is installed, because `fdet-api` is installed from a git URL.
+- `fdet-api` (the `yhsmiley/fdet-api` fork, used for the F-scores in `eval_map.py`) is pinned to a commit in
+  `requirements.txt`. Do not add `--no-build-isolation`, it bypasses the `pyproject.toml`. The pin also stops Docker from reusing a cached layer with an older copy of the fork.
 
 ## 5. Verification
 
@@ -113,13 +118,31 @@ Results (CPU, onnxruntime 1.24.4, optimizations off, fresh opset 11 exports):
 Isolating the changes showed that the plain opset 11 export without the post-pass (`export_dfine.py`) and the
 opset 17 `grid_sample` export both match PyTorch exactly, so the `gather` sampler is correct.
 
-### Accuracy against ground truth (mAP)
-`eval_map.py` scores the PyTorch model (original `grid_sample` path) and the ONNX on the same images with
-`faster-coco-eval`, against a COCO format ground truth file. For a COCO model the model labels are matched to the
-ground truth categories by class name, so the ground truth can use any category ids. See `CONVERSION_INSTRUCTIONS.md`
-for the command.
+### Accuracy against ground truth (F-scores and mAP)
+`eval_map.py` scores the PyTorch model (original `grid_sample` path) and the ONNX on the same images, against a COCO
+format ground truth file. For a COCO model the model labels are matched to the ground truth categories by class name,
+so the ground truth can use any category ids. `--eval` picks the evaluator. See `CONVERSION_INSTRUCTIONS.md` for the
+command.
 
-D-FINE-N COCO, 640, all 128 coco128 images (931 ground truth boxes, 71 classes, `labels.json`):
+- `--eval fdet` (default): macro F1 and F2 scores from the fdet-api fork. The scores are computed on exactly the
+  detections given, with no confidence cutoff of their own, so `--min-score` (default 0.3) should be the score you
+  deploy with. With about 38,000 detections down to score 0.001 the F1 at IoU 0.5 is only 0.046, because the low-score
+  tail ruins the precision.
+- `--eval coco`: COCO mAP from `faster-coco-eval`, on all detections down to `--min-score` (default 0.001). Do not
+  compare it with the fork's own AP: the fork averages over IoU 0.10 to 0.95, not 0.50 to 0.95 (its AP50 and AP75 do
+  match).
+
+D-FINE-N COCO, 640, all 128 coco128 images (931 ground truth boxes, 71 classes, `labels.json`), `--eval fdet` at score
+0.3 (1960 detections), PyTorch against ONNX with the optimizer off:
+
+| Metric | PyTorch | ONNX |
+|---|---|---|
+| F1 IoU 0.50 | 0.5417 | 0.5417 |
+| F1 IoU 0.75 | 0.4641 | 0.4641 |
+| F1 small / medium / large | 0.3553 / 0.5480 / 0.6561 | 0.3553 / 0.5480 / 0.6561 |
+| F2 IoU 0.50 | 0.6510 | 0.6510 |
+
+All ten F-scores are identical to four decimals. The same run with `--eval coco`:
 
 | Metric | PyTorch | ONNX, optimizer off | ONNX, optimizer on (basic) |
 |---|---|---|---|
@@ -129,8 +152,8 @@ D-FINE-N COCO, 640, all 128 coco128 images (931 ground truth boxes, 71 classes, 
 | AR 100 | 0.7026 | 0.7026 | 0.7026 |
 
 With the optimizer off the ONNX matches PyTorch to four decimals and the detection counts are identical (38144 each).
-coco128 is a subset of COCO train2017, which this checkpoint was trained on, so the absolute mAP is optimistic. Use the
-PyTorch versus ONNX comparison, and run on COCO val2017 for a real accuracy number.
+coco128 is a subset of COCO train2017, which this checkpoint was trained on, so the absolute numbers are optimistic.
+Use the PyTorch versus ONNX comparison, and run on COCO val2017 for a real accuracy number.
 
 ### Known issue: onnxruntime Pad/MaxPool fusion
 With onnxruntime's graph optimization on (the default), the post-pass export gives different results. On all 128 coco128
@@ -153,8 +176,8 @@ least 0.947 and score differences up to 0.04, so do not judge this on a small sa
 - The TensorRT 7 engine. All checks above are against onnxruntime, so whether the Pad, Clip, Gather, MatMul and Split
   rewrites are enough for the TensorRT 7 parser, and give the same values there, still has to be checked on the
   Jetson.
-- mAP on held-out data. The mAP above is on coco128, which the COCO checkpoint was trained on.
-- mAP of the maritime D-FINE and YOLO11 models. The repo has no maritime images or annotations. `eval_map.py` supports
-  them (`--label-map identity`, `--model yolo11`) but it has not been run on them.
+- Accuracy on held-out data. The F-scores and mAP above are on coco128, which the COCO checkpoint was trained on.
+- F-scores and mAP of the maritime D-FINE and YOLO11 models. The repo has no maritime images or annotations.
+  `eval_map.py` supports them (`--label-map identity`, `--model yolo11`) but it has not been run on them.
 - The maritime and YOLO11 models on maritime images (the parity checks used coco128 images).
 - Dynamic batch size.

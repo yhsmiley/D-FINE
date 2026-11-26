@@ -1,8 +1,12 @@
 """
-COCO mAP against ground truth for the PyTorch model and its exported ONNX, side by side.
+Accuracy against ground truth for the PyTorch model and its exported ONNX, side by side.
 
 Both models run on the same input as verify_onnx.py (image resized to --size, scaled to 0..1). Boxes are scaled back
-to the original image size and scored with faster-coco-eval (a pycocotools replacement already used by this repo).
+to the original image size and scored with one of two evaluators (--eval):
+  fdet  (default) F1 and F2 scores (macro) from the fdet-api fork. They are computed on the detections kept by
+                  --min-score (default 0.3), so use the score you deploy with.
+  coco            COCO mAP from faster-coco-eval (a pycocotools replacement already used by this repo), on all
+                  detections down to --min-score (default 0.001).
 The PyTorch side uses the original grid_sample path, so a drop in the ONNX column is caused by the export.
 
 Class mapping:
@@ -69,6 +73,31 @@ def coco_eval(gt, results, image_ids):
     return [float(s) for s in ev.stats]
 
 
+def fdet_eval(true_path, preds, image_ids=None):
+    """F-beta scores (macro) from the fdet-api fork. preds is a list of COCO result dicts or a json path.
+    Returns 10 values, in the order of FDET_ROWS. The scores are computed on exactly the detections given, there is
+    no confidence cutoff of its own, so filter them to the score you deploy with first."""
+    from fdet_api.coco import COCO
+    from fdet_api.cocoeval import COCOeval
+    if not preds:
+        return [0.0] * 10
+    cocoGt = COCO(true_path)  # initialize COCO ground truth api
+    cocoDt = cocoGt.loadRes(preds)  # initialize COCO prediction api
+    ev = COCOeval(cocoGt, cocoDt, 'bbox')  # initialize COCO evaluation api
+    if image_ids is not None:
+        ev.params.imgIds = image_ids
+    ev.evaluate()
+    ev.accumulateFBeta()
+    ev.summarizeFBetaScores(average='macro')
+    return [float(s) for s in ev.fstats]    # summarizeFBetaScores fills fstats, not stats
+
+
+COCO_ROWS = ((0, "mAP 0.50:0.95"), (1, "AP50"), (2, "AP75"), (3, "AP small"), (4, "AP medium"), (5, "AP large"),
+             (8, "AR 100"))
+FDET_ROWS = ((0, "F1 IoU 0.50"), (1, "F1 IoU 0.75"), (2, "F1 small"), (3, "F1 medium"), (4, "F1 large"),
+             (5, "F2 IoU 0.50"), (6, "F2 IoU 0.75"), (7, "F2 small"), (8, "F2 medium"), (9, "F2 large"))
+
+
 def parse_args():
     import argparse
     p = argparse.ArgumentParser(description="COCO mAP of the PyTorch model and its ONNX against ground truth")
@@ -83,7 +112,10 @@ def parse_args():
     p.add_argument("--slice-classes", action="store_true", help="Same flag as the export, for a wider class head")
     p.add_argument("--label-map", choices=["coco80", "identity"], default="coco80")
     p.add_argument("--category-offset", type=int, default=0, help="With --label-map identity: category id = label + N")
-    p.add_argument("--min-score", type=float, default=0.001, help="Drop detections below this score")
+    p.add_argument("--eval", choices=["fdet", "coco"], default="fdet",
+                   help="fdet = F1/F2 scores from the fdet-api fork (default), coco = COCO mAP from faster-coco-eval")
+    p.add_argument("--min-score", type=float, default=None,
+                   help="Drop detections below this score (default 0.3 for --eval fdet, 0.001 for --eval coco)")
     p.add_argument("--ort-opt", choices=list(ORT_LEVELS), default="disable",
                    help="onnxruntime graph optimization level (default disable, see verify_onnx.py)")
     args = p.parse_args()
@@ -93,6 +125,9 @@ def parse_args():
         if not os.path.isfile(path):
             p.error("file not found: %s" % path)
     args.img_size = args.size * 2 if len(args.size) == 1 else args.size
+    if args.min_score is None:
+        # mAP needs the full low-score tail, F-scores are only meaningful at the score you deploy with
+        args.min_score = 0.3 if args.eval == "fdet" else 0.001
     return args
 
 
@@ -127,14 +162,21 @@ def main():
         if n % 20 == 0 or n == len(images):
             print("  %d/%d images" % (n, len(images)), flush=True)
 
-    s_torch = coco_eval(gt, res_torch, image_ids)
-    s_onnx = coco_eval(gt, res_onnx, image_ids)
+    if args.eval == "coco":
+        s_torch = coco_eval(gt, res_torch, image_ids)
+        s_onnx = coco_eval(gt, res_onnx, image_ids)
+        rows = COCO_ROWS
+    else:
+        with contextlib.redirect_stdout(io.StringIO()):
+            s_torch = fdet_eval(args.gt, res_torch, image_ids)
+            s_onnx = fdet_eval(args.gt, res_onnx, image_ids)
+        rows = FDET_ROWS
     n_gt = sum(1 for a in gt.dataset["annotations"] if a["image_id"] in set(image_ids))
     print("\nimages: %d, ground truth boxes: %d, onnxruntime optimization: %s" % (len(images), n_gt, args.ort_opt))
-    print("detections kept (score >= %g): torch %d, onnx %d" % (args.min_score, len(res_torch), len(res_onnx)))
+    print("evaluation: %s, detections kept (score >= %g): torch %d, onnx %d"
+          % (args.eval, args.min_score, len(res_torch), len(res_onnx)))
     print("\n%-22s %10s %10s %10s" % ("", "PyTorch", "ONNX", "diff"))
-    for i, name in ((0, "mAP 0.50:0.95"), (1, "AP50"), (2, "AP75"), (3, "AP small"), (4, "AP medium"), (5, "AP large"),
-                    (8, "AR 100")):
+    for i, name in rows:
         print("%-22s %10.4f %10.4f %+10.4f" % (name, s_torch[i], s_onnx[i], s_onnx[i] - s_torch[i]))
 
 

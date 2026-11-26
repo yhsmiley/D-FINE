@@ -8,6 +8,8 @@
     Keep the default `--ort-opt disable`. The onnx file is not affected.
 1. Check accuracy against ground truth (optional, needs images and a COCO format json) \
     `python3 eval_map.py --onnx <name>.onnx -w <weights> -c <config> -s <size> --images <image root> --gt <labels.json>` \
-    Prints mAP for PyTorch and the onnx side by side, they should be equal to about 3 decimals. \
+    Prints the scores for PyTorch and the onnx side by side, they should be equal to about 3 decimals. \
+    `--eval fdet` (default) prints F1 and F2 scores from the fdet-api fork, on the detections above `--min-score` \
+    (default 0.3, set it to the score you deploy with). `--eval coco` prints COCO mAP instead. \
     For a COCO model the classes are matched by name. For a custom model such as maritime, add `--label-map identity`.
 1. Copy the onnx into sits

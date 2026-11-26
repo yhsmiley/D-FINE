@@ -23,11 +23,12 @@ RUN apt-get install --no-install-recommends -y software-properties-common gpg-ag
 
 RUN apt-get install --no-install-recommends -y \
     build-essential \
+    curl \
+    git \
     libgl1-mesa-glx \
     python3.11 \
     python3.11-dev \
-    python3.11-distutils \
-    curl
+    python3.11-distutils
 
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
     update-alternatives --set python3 /usr/bin/python3.11
@@ -45,24 +46,9 @@ ENV PYTHONIOENCODING=UTF-8
 
 RUN python3 -m pip install --upgrade pip setuptools
 
-# Pin torch to a CUDA 12.1 build to match the host driver (530.x) and keep the legacy ONNX exporter default
-RUN pip3 install --no-cache-dir --retries 10 --timeout 60 --resume-retries 10 \
-    torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+# retry and resume downloads on a flaky network - env vars (unlike CLI flags) also reach the nested pip that
+# tensorrt-cu12 runs for its 2 GB libs wheel
+ENV PIP_RETRIES=10 PIP_TIMEOUT=60 PIP_RESUME_RETRIES=200
 
 COPY requirements.txt requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
-
-# tensorrt pinned to a release that supports CUDA 12.0-12.5, to match the host driver (530.x)
-# tensorrt-cu12 runs a nested pip for the 2 GB libs wheel - env vars (unlike CLI flags) reach it
-RUN PIP_RESUME_RETRIES=200 PIP_RETRIES=10 PIP_TIMEOUT=60 \
-    pip3 install --no-cache-dir tensorrt-cu12==10.3.0
-
-# onnxruntime-gpu replaces onnxruntime (same module, and it still has the CPU provider)
-# onnxruntime-gpu 1.24.4 is built for CUDA 12 + cuDNN 9 (1.30 needs CUDA 13, which driver 530.x can't run)
-RUN pip3 install --no-cache-dir \
-    onnx \
-    onnxslim \
-    onnxruntime-gpu==1.24.4
-
-# ultralytics for export_yolo11_trt7.py (torch is already pinned above, pip keeps it as it satisfies ultralytics)
-RUN pip3 install --no-cache-dir ultralytics
